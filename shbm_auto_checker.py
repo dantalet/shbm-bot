@@ -25,10 +25,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ====== GOOGLE SHEETS ======
+import os
+import json
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+
 def get_sheet_service():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
-    return build('sheets', 'v4', credentials=creds).spreadsheets()
+
+    # Читаем JSON-ключ из переменной окружения
+    credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if not credentials_json:
+        raise Exception("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable is not set!")
+
+    # Преобразуем строку JSON в словарь
+    creds_dict = json.loads(credentials_json)
+
+    # Создаём учётные данные из словаря
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+
+    # Создаём сервис Google Sheets
+    service = build('sheets', 'v4', credentials=creds)
+    return service.spreadsheets()
 
 def load_settings(service):
     result = service.values().get(spreadsheetId=SHEET_ID, range=f"{SETTINGS_SHEET}!A:E").execute()
@@ -173,4 +191,5 @@ async def main():
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
+
     asyncio.run(main())
