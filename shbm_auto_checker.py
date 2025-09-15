@@ -16,9 +16,9 @@ BOT_TOKEN = '8363948497:AAGvcnuftvrZbaHMBubIbtevRlPRPXaLFfw'
 SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← ЗАМЕНИ НА СВОЙ!
 CREDENTIALS_FILE = 'credentials.json'
 
-SETTINGS_SHEET = 'Настройки'
-REPORTS_SHEET = 'Отчеты'
-PARTICIPANTS_SHEET = 'Участники'
+SETTINGS_SHEET = 'SETTINGS'
+REPORTS_SHEET = 'REPORTS'
+PARTICIPANTS_SHEET = 'PARTICIPANTS'
 
 # ====== ЛОГИРОВАНИЕ ======
 logging.basicConfig(level=logging.INFO)
@@ -193,3 +193,4 @@ async def main():
 if __name__ == '__main__':
 
     asyncio.run(main())
+
