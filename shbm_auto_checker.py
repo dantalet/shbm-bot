@@ -17,9 +17,9 @@ API_HASH = os.getenv('TELEGRAM_API_HASH')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'
-SETTINGS_SHEET = 'Настройки'
-REPORTS_SHEET = 'Отчеты'
-PARTICIPANTS_SHEET = 'Участники'
+SETTINGS_SHEET = 'SETTINGS'
+REPORTS_SHEET = 'REPORTS'
+PARTICIPANTS_SHEET = 'PARTICIPANTS'
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -242,3 +242,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
