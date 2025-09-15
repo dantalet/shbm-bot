@@ -8,6 +8,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
 from telethon import TelegramClient, events
+from flask import Flask
 
 # ====== КОНФИГУРАЦИЯ ======
 API_ID = os.getenv('TELEGRAM_API_ID')
@@ -69,6 +70,25 @@ def extract_name(text):
     match = re.search(r'#([А-Яа-яЁё]+_[А-Яа-яЁё]+)', text)
     return match.group(1) if match else None
 
+# ====== TELETHON БОТ (в отдельном потоке) ======
+async def run_telegram_bot():
+    service = get_sheet_service()
+    settings = load_settings(service)
+    participants = load_participants(service)
+    settings_map = {s['topic_name']: s for s in settings}
+
+    client = TelegramClient('shbm_session', API_ID, API_HASH)
+    await client.start(bot_token=BOT_TOKEN)
+    logger.info("🤖 Бот запущен. Слушаю темы...")
+
+    @client.on(events.NewMessage(incoming=True))
+    async def handler(event):
+        await handle_message(event, client, service, settings_map)
+
+    asyncio.create_task(scheduled_daily_report(service, settings, participants))
+
+    await client.run_until_disconnected()
+
 async def handle_message(event, client, service, settings_map):
     message = event.message
     if not message.is_topic_message:
@@ -106,6 +126,16 @@ async def handle_message(event, client, service, settings_map):
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
     logger.info(f"✅ Записано: {name} ({status}) в {topic_name}")
 
+async def scheduled_daily_report(service, settings, participants):
+    while True:
+        now = datetime.now()
+        next_run = now.replace(hour=12, minute=0, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_seconds = (next_run - now).total_seconds()
+        await asyncio.sleep(sleep_seconds)
+        await daily_report(service, settings, participants)
+
 async def daily_report(service, settings, participants):
     today = datetime.now().strftime("%Y-%m-%d")
     report_lines = []
@@ -130,24 +160,9 @@ async def daily_report(service, settings, participants):
 
     if report_lines:
         admin_chat_id = "741688548"
-        await send_telegram_message(admin_chat_id, "\n".join(report_lines))
+        print("📩 Отчёт:", "\n".join(report_lines))  # или добавьте отправку через Telethon
 
-async def scheduled_daily_report(service, settings, participants):
-    while True:
-        now = datetime.now()
-        next_run = now.replace(hour=12, minute=0, second=0, microsecond=0)
-        if now >= next_run:
-            next_run += timedelta(days=1)
-        sleep_seconds = (next_run - now).total_seconds()
-        await asyncio.sleep(sleep_seconds)
-        await daily_report(service, settings, participants)
-
-async def send_telegram_message(chat_id, text):
-    print("📩 Отчёт:", text)
-
-# ====== FLASK HTTP-СЕРВЕР (обход Render) ======
-from flask import Flask
-
+# ====== FLASK HTTP-СЕРВЕР (основной поток — для Render) ======
 app = Flask(__name__)
 
 @app.route('/')
@@ -156,29 +171,14 @@ def health():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, threaded=True)  # threaded=True — безопасно
 
-flask_thread = threading.Thread(target=run_flask, daemon=True)
-flask_thread.start()
-
-# ====== ЗАПУСК БОТА ======
-async def main():
-    service = get_sheet_service()
-    settings = load_settings(service)
-    participants = load_participants(service)
-    settings_map = {s['topic_name']: s for s in settings}
-
-    client = TelegramClient('shbm_session', API_ID, API_HASH)
-    await client.start(bot_token=BOT_TOKEN)
-    logger.info("🤖 Бот запущен. Слушаю темы...")
-
-    @client.on(events.NewMessage(incoming=True))
-    async def handler(event):
-        await handle_message(event, client, service, settings_map)
-
-    asyncio.create_task(scheduled_daily_report(service, settings, participants))
-
-    await client.run_until_disconnected()
-
+# ====== ТОЧКА ВХОДА ======
 if __name__ == '__main__':
-    asyncio.run(main())
+    # Запускаем Telethon в фоновом потоке
+    telegram_thread = threading.Thread(target=lambda: asyncio.run(run_telegram_bot()), daemon=True)
+    telegram_thread.start()
+
+    # Запускаем Flask в основном потоке — именно здесь Render ждёт порт!
+    logger.info("🌐 Запуск HTTP-сервера для Render...")
+    run_flask()  # ← ЭТО БЛОКИРУЕТ ПОТОК, И ЭТО НУЖНО!
