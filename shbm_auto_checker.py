@@ -8,7 +8,6 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
 from telethon import TelegramClient, events
-from telethon.tl.types import KeyboardButton, ReplyKeyboardMarkup
 from aiohttp import web
 
 # ====== КОНФИГУРАЦИЯ ======
@@ -241,25 +240,8 @@ async def health_check(request):
     """Отвечает на / — Render проверяет жив ли сервис"""
     return web.Response(text="✅ Telegram bot is running!", content_type="text/plain")
 
-async def check_all(request):
-    """Обработка /check_all — вызывает принудительную проверку"""
-    logger.info("🌐 Получен HTTP-запрос /check_all — запускаю проверку...")
-    asyncio.create_task(check_all_topics(client, service, settings, participants))
-    return web.Response(text="🟢 Проверка запущена. Отчёт придёт в Telegram.", content_type="text/plain")
-
-async def check_topic(request):
-    """Обработка /check_Тема — проверка одной темы"""
-    topic = request.match_info.get('topic', '')
-    if not topic:
-        return web.Response(text="❌ Укажите тему: /check_Сдача_проекта", content_type="text/plain")
-    logger.info(f"🌐 Получен HTTP-запрос /check_{topic} — запускаю проверку...")
-    asyncio.create_task(check_specific_topic(client, service, settings, participants, topic))
-    return web.Response(text=f"🟢 Проверка темы '{topic}' запущена. Отчёт придёт в Telegram.", content_type="text/plain")
-
 app = web.Application()
 app.router.add_get('/', health_check)
-app.router.add_get('/check_all', check_all)
-app.router.add_get('/check_{topic}', check_topic)
 
 # ====== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======
 client = None
@@ -282,20 +264,6 @@ async def main():
         await client.start(bot_token=BOT_TOKEN)
         logger.info("🤖 Бот успешно авторизован в Telegram")
 
-        # Устанавливаем кнопку
-        button = KeyboardButton(text="🔍 Проверить всё")
-        markup = ReplyKeyboardMarkup([[button]])
-
-        try:
-            await client.send_message(
-                ADMIN_CHAT_ID,
-                "✅ Бот готов к работе.\n\n🔘 Нажмите кнопку ниже.\n\n💡 Также можно использовать команды:\n`/check_all`\n`/check_Тема`",
-                buttons=markup
-            )
-            logger.info("✅ Кнопка и инструкция отправлены админу")
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось отправить кнопку: {e}")
-
         # Команды
         @client.on(events.NewMessage(incoming=True, pattern=r'^/check_all$'))
         async def on_check_all(event):
@@ -309,12 +277,6 @@ async def main():
             logger.info(f"👤 Пользователь использовал команду /check_{topic_name}")
             await event.reply(f"🔄 Запускаю проверку темы: {topic_name}...")
             await check_specific_topic(client, service, settings, participants, topic_name)
-
-        @client.on(events.NewMessage(incoming=True, pattern=r'^🔍\s*Проверить всё$'))
-        async def on_button_press(event):
-            logger.info("🖱️ Пользователь нажал кнопку 'Проверить всё'")
-            await event.reply("🔄 Запускаю проверку всех тем...")
-            await check_all_topics(client, service, settings, participants)
 
         @client.on(events.NewMessage(incoming=True))
         async def handler(event):
