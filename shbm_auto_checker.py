@@ -14,12 +14,11 @@ API_ID = os.getenv('TELEGRAM_API_ID')
 API_HASH = os.getenv('TELEGRAM_API_HASH')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← ЗАМЕНИ НА СВОЙ!
+SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'
 SETTINGS_SHEET = 'Настройки'
 REPORTS_SHEET = 'Отчеты'
 PARTICIPANTS_SHEET = 'Участники'
 
-# Убедись, что в .env нет пробелов в URL!
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # ====== ЛОГИРОВАНИЕ ======
@@ -41,11 +40,11 @@ def load_settings(service):
     values = result.get('values', [])
     settings = []
     for row in values[1:]:
-        if len(row) < 5 or row[3].lower() != 'да':  # активна?
+        if len(row) < 5 or row[3].lower() != 'да':
             continue
         settings.append({
             'topic_name': row[0],
-            'deadline': row[1],  # HH:MM
+            'deadline': row[1],
             'format_pattern': row[2],
             'chat_id': row[4]
         })
@@ -66,12 +65,10 @@ def record_submission(service, topic, participant, status, send_time, link=""):
         body={"values": [row]}
     ).execute()
 
-# ====== ПАРСИНГ ======
 def extract_name(text):
     match = re.search(r'#([А-Яа-яЁё]+_[А-Яа-яЁё]+)', text)
     return match.group(1) if match else None
 
-# ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
 async def handle_message(event, client, service, settings_map):
     message = event.message
     if not message.is_topic_message:
@@ -79,8 +76,6 @@ async def handle_message(event, client, service, settings_map):
 
     topic_name = message.topic_name
     text = message.text or ""
-    sender = message.from_user.first_name
-    username = getattr(message.from_user, 'username', None)
     chat_id = str(message.peer_id.channel_id)
 
     setting = settings_map.get(topic_name)
@@ -111,7 +106,6 @@ async def handle_message(event, client, service, settings_map):
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
     logger.info(f"✅ Записано: {name} ({status}) в {topic_name}")
 
-# ====== ЕЖЕДНЕВНЫЙ ОТЧЁТ ======
 async def daily_report(service, settings, participants):
     today = datetime.now().strftime("%Y-%m-%d")
     report_lines = []
@@ -135,11 +129,10 @@ async def daily_report(service, settings, participants):
             report_lines.append("")
 
     if report_lines:
-        admin_chat_id = "741688548"  # ← ЗАМЕНИ НА СВОЙ (узнай через @userinfobot)
+        admin_chat_id = "741688548"
         await send_telegram_message(admin_chat_id, "\n".join(report_lines))
 
 async def scheduled_daily_report(service, settings, participants):
-    """Запускает ежедневный отчёт в 12:00"""
     while True:
         now = datetime.now()
         next_run = now.replace(hour=12, minute=0, second=0, microsecond=0)
@@ -150,13 +143,9 @@ async def scheduled_daily_report(service, settings, participants):
         await daily_report(service, settings, participants)
 
 async def send_telegram_message(chat_id, text):
-    """Отправляет сообщение админу через бота (если нужно)"""
-    # Это заглушка — если хочешь отправлять реальные сообщения, раскомментируй ниже
     print("📩 Отчёт:", text)
-    # Используй Telethon, если нужно реально отправить:
-    # await bot.send_message(chat_id, text)
 
-# ====== FLASK HTTP-СЕРВЕР (для Render) ======
+# ====== FLASK HTTP-СЕРВЕР (обход Render) ======
 from flask import Flask
 
 app = Flask(__name__)
@@ -177,7 +166,6 @@ async def main():
     service = get_sheet_service()
     settings = load_settings(service)
     participants = load_participants(service)
-
     settings_map = {s['topic_name']: s for s in settings}
 
     client = TelegramClient('shbm_session', API_ID, API_HASH)
@@ -188,10 +176,8 @@ async def main():
     async def handler(event):
         await handle_message(event, client, service, settings_map)
 
-    # Запускаем ежедневный отчёт в фоне
     asyncio.create_task(scheduled_daily_report(service, settings, participants))
 
-    # Ждём событий Telegram
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
