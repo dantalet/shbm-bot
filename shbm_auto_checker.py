@@ -17,13 +17,14 @@ API_HASH = os.getenv('TELEGRAM_API_HASH')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'
-SETTINGS_SHEET = 'SETTINGS'
-REPORTS_SHEET = 'REPORTS'
-PARTICIPANTS_SHEET = 'PARTICIPANTS'
+SETTINGS_SHEET = 'Настройки'
+REPORTS_SHEET = 'Отчеты'
+PARTICIPANTS_SHEET = 'Участники'
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-ADMIN_CHAT_ID = "741688548"  # ← ЗАМЕНИ НА СВОЙ ID
+# 🔑 ВАЖНО: ADMIN_CHAT_ID — это ЦЕЛОЕ ЧИСЛО, а не строка!
+ADMIN_CHAT_ID = 741688548  # ← УБЕДИТЕСЬ, ЧТО ЭТО int, а не "741688548"
 
 # ====== ЛОГИРОВАНИЕ ======
 logging.basicConfig(level=logging.INFO)
@@ -152,7 +153,7 @@ async def main():
     participants = load_participants(service)
     settings_map = {s['topic_name']: s for s in settings}
 
-    # 🚨 ВАЖНО: СОХРАНЯЕМ СЕССИЮ В ПОСТОЯННЫЙ ДИСК RENDER
+    # 📁 Сохраняем сессию на Persistent Disk
     session_path = "/opt/render/project/src/shbm_session"
     client = TelegramClient(session_path, API_ID, API_HASH)
 
@@ -162,37 +163,29 @@ async def main():
     except Exception as e:
         if "FloodWaitError" in str(e):
             logger.error("🛑 Телеграм заблокировал доступ — подождите 10 минут.")
-            raise SystemExit(1)  # Прерываем запуск, чтобы не зациклиться
+            raise SystemExit(1)
         else:
             raise e
 
-    # Создаём кнопку (БЕЗ неподдерживаемых параметров!)
-    button = KeyboardButton(text="🔍 Проверить сейчас")
-    markup = ReplyKeyboardMarkup([[button]])  # ← ИСПРАВЛЕНО: убраны all params
-
-    # Отправляем кнопку только один раз при старте
-    try:
-        await client.send_message(ADMIN_CHAT_ID, "✅ Бот готов к работе. Нажмите 'Проверить сейчас' для ручной проверки.", buttons=markup)
-    except Exception as e:
-        logger.warning(f"Не удалось отправить кнопку: {e}")
-
-    # Обработчик нажатия кнопки
-    @client.on(events.NewMessage(incoming=True, pattern=r'^🔍\s*Проверить сейчас$'))
-    async def on_button_press(event):
-        logger.info("🖱️ Пользователь нажал 'Проверить сейчас'")
-        await event.reply("🔄 Запускаю проверку...")
-        await force_check(client, service, settings, participants)
-
-    # Обработчик новых сообщений в темах
+    # 💡 КЛЮЧЕВОЙ ИСПРАВЛЕНИЕ: НЕ ИСПОЛЬЗУЕМ is_topic_message — он удалён в Telethon v1.34+
+    # Вместо этого — проверяем, что сообщение пришло из канала/группы с темами
     @client.on(events.NewMessage(incoming=True))
     async def handler(event):
+        message = event.message
+        # Проверяем, что сообщение пришло из группы/канала (не личный чат)
+        if not hasattr(message.peer_id, 'channel_id'):
+            return  # Это не группа — пропускаем
+
+        # Получаем имя темы (если есть)
+        topic_name = getattr(message, 'topic_name', None)
+        if not topic_name:
+            return  # Это не тематическое сообщение — пропускаем
+
+        # Дальше — стандартная логика
         await handle_message(event, client, service, settings_map)
 
     async def handle_message(event, client, service, settings_map):
         message = event.message
-        if not message.is_topic_message:
-            return
-
         topic_name = message.topic_name
         text = message.text or ""
         chat_id = str(message.peer_id.channel_id)
@@ -224,6 +217,22 @@ async def main():
 
         record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
         logger.info(f"✅ Записано: {name} ({status}) в {topic_name}")
+
+    # 👇 КЛЮЧЕВОЙ ИСПРАВЛЕНИЕ: УБРАЛИ one_time_keyboard и resize_keyboard — они не поддерживаются
+    button = KeyboardButton(text="🔍 Проверить сейчас")
+    markup = ReplyKeyboardMarkup([[button]])  # ← Только так!
+
+    try:
+        await client.send_message(ADMIN_CHAT_ID, "✅ Бот готов к работе. Нажмите 'Проверить сейчас' для ручной проверки.", buttons=markup)
+    except Exception as e:
+        logger.warning(f"Не удалось отправить кнопку: {e}")
+
+    # Обработчик нажатия кнопки
+    @client.on(events.NewMessage(incoming=True, pattern=r'^🔍\s*Проверить сейчас$'))
+    async def on_button_press(event):
+        logger.info("🖱️ Пользователь нажал 'Проверить сейчас'")
+        await event.reply("🔄 Запускаю проверку...")
+        await force_check(client, service, settings, participants)
 
     # Запускаем ежечасную проверку
     asyncio.create_task(scheduled_force_check(client, service, settings, participants))
