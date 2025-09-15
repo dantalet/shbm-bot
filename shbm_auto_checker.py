@@ -1,52 +1,40 @@
 import os
 import re
 import asyncio
+import json
+import threading
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
 from telethon import TelegramClient, events
-from telethon.tl.types import MessageEntityHashtag
 
 # ====== КОНФИГУРАЦИЯ ======
-API_ID = '20299753'
-API_HASH = '946ca1572df8a667a3bd81d78370310d'
-BOT_TOKEN = '8363948497:AAGvcnuftvrZbaHMBubIbtevRlPRPXaLFfw'
+API_ID = os.getenv('TELEGRAM_API_ID')
+API_HASH = os.getenv('TELEGRAM_API_HASH')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← ЗАМЕНИ НА СВОЙ!
-CREDENTIALS_FILE = 'credentials.json'
+SETTINGS_SHEET = 'Настройки'
+REPORTS_SHEET = 'Отчеты'
+PARTICIPANTS_SHEET = 'Участники'
 
-SETTINGS_SHEET = 'SETTINGS'
-REPORTS_SHEET = 'REPORTS'
-PARTICIPANTS_SHEET = 'PARTICIPANTS'
+# Убедись, что в .env нет пробелов в URL!
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # ====== ЛОГИРОВАНИЕ ======
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ====== GOOGLE SHEETS ======
-import os
-import json
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-
 def get_sheet_service():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-
-    # Читаем JSON-ключ из переменной окружения
     credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
     if not credentials_json:
-        raise Exception("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable is not set!")
+        raise Exception("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON is not set!")
 
-    # Преобразуем строку JSON в словарь
     creds_dict = json.loads(credentials_json)
-
-    # Создаём учётные данные из словаря
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-
-    # Создаём сервис Google Sheets
-    service = build('sheets', 'v4', credentials=creds)
-    return service.spreadsheets()
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return build('sheets', 'v4', credentials=creds).spreadsheets()
 
 def load_settings(service):
     result = service.values().get(spreadsheetId=SHEET_ID, range=f"{SETTINGS_SHEET}!A:E").execute()
@@ -93,20 +81,17 @@ async def handle_message(event, client, service, settings_map):
     text = message.text or ""
     sender = message.from_user.first_name
     username = getattr(message.from_user, 'username', None)
-    chat_id = str(message.peer_id.channel_id)  # ID группы
+    chat_id = str(message.peer_id.channel_id)
 
-    # Получаем настройки для этой темы
     setting = settings_map.get(topic_name)
     if not setting:
         return
 
-    # Проверяем формат
     name = extract_name(text)
     if not name:
         logger.info(f"Неправильный формат: {text} | Тема: {topic_name}")
         return
 
-    # Проверяем, не было ли уже такого же имени сегодня
     today = datetime.now().strftime("%Y-%m-%d")
     result = service.values().get(spreadsheetId=SHEET_ID, range=f"{REPORTS_SHEET}!A:C").execute()
     rows = result.get('values', [])
@@ -115,17 +100,14 @@ async def handle_message(event, client, service, settings_map):
             logger.info(f"Уже записано: {name} в {topic_name}")
             return
 
-    # Проверяем дедлайн
     deadline_str = setting['deadline']
     deadline_hour, deadline_min = map(int, deadline_str.split(':'))
     now = datetime.now()
     deadline = now.replace(hour=deadline_hour, minute=deadline_min, second=0, microsecond=0)
     status = "Сдал" if now <= deadline else "Опоздал"
 
-    # Формируем ссылку на сообщение
     link = f"https://t.me/c/{chat_id[4:]}/{message.id}" if chat_id.startswith('-100') else ""
 
-    # Сохраняем
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
     logger.info(f"✅ Записано: {name} ({status}) в {topic_name}")
 
@@ -138,7 +120,6 @@ async def daily_report(service, settings, participants):
         topic = setting['topic_name']
         deadline = setting['deadline']
 
-        # Получаем всех, кто сдал
         result = service.values().get(spreadsheetId=SHEET_ID, range=f"{REPORTS_SHEET}!A:C").execute()
         rows = result.get('values', [])
         submitted = set()
@@ -157,11 +138,39 @@ async def daily_report(service, settings, participants):
         admin_chat_id = "741688548"  # ← ЗАМЕНИ НА СВОЙ (узнай через @userinfobot)
         await send_telegram_message(admin_chat_id, "\n".join(report_lines))
 
+async def scheduled_daily_report(service, settings, participants):
+    """Запускает ежедневный отчёт в 12:00"""
+    while True:
+        now = datetime.now()
+        next_run = now.replace(hour=12, minute=0, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_seconds = (next_run - now).total_seconds()
+        await asyncio.sleep(sleep_seconds)
+        await daily_report(service, settings, participants)
+
 async def send_telegram_message(chat_id, text):
-    """Простая отправка сообщения через бота (если нужно)"""
-    # Здесь можно использовать Telethon для отправки
-    # Но если ты хочешь только сбор данных — можно пока пропустить
+    """Отправляет сообщение админу через бота (если нужно)"""
+    # Это заглушка — если хочешь отправлять реальные сообщения, раскомментируй ниже
     print("📩 Отчёт:", text)
+    # Используй Telethon, если нужно реально отправить:
+    # await bot.send_message(chat_id, text)
+
+# ====== FLASK HTTP-СЕРВЕР (для Render) ======
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/')
+def health():
+    return "✅ Telegram bot is running!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
+
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
 
 # ====== ЗАПУСК БОТА ======
 async def main():
@@ -169,28 +178,21 @@ async def main():
     settings = load_settings(service)
     participants = load_participants(service)
 
-    # Словарь: название темы -> настройка
     settings_map = {s['topic_name']: s for s in settings}
 
-    # Создаём клиент
     client = TelegramClient('shbm_session', API_ID, API_HASH)
-
     await client.start(bot_token=BOT_TOKEN)
     logger.info("🤖 Бот запущен. Слушаю темы...")
 
-    # Регистрируем обработчик
     @client.on(events.NewMessage(incoming=True))
     async def handler(event):
         await handle_message(event, client, service, settings_map)
 
-    # Запускаем ежедневный отчёт в 12:00 (можно сделать через cron — проще)
-    # Для теста — запустим один раз сейчас
-    await daily_report(service, settings, participants)
+    # Запускаем ежедневный отчёт в фоне
+    asyncio.create_task(scheduled_daily_report(service, settings, participants))
 
-    # Ждём событий
+    # Ждём событий Telegram
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
-
     asyncio.run(main())
-
