@@ -1,0 +1,1 @@
+web: python shbm_auto_checker.py
