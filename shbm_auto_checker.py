@@ -16,14 +16,14 @@ API_ID = os.getenv('TELEGRAM_API_ID')
 API_HASH = os.getenv('TELEGRAM_API_HASH')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← Замените на свой!
+SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← ЗАМЕНИТЕ НА СВОЙ!
 SETTINGS_SHEET = 'SETTINGS'
 REPORTS_SHEET = 'REPORTS'
 PARTICIPANTS_SHEET = 'PARTICIPANTS'
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-ADMIN_CHAT_ID = 741688548  # ← ЦЕЛОЕ ЧИСЛО! (узнать через @userinfobot)
+ADMIN_CHAT_ID = 741688548  # ← УБЕДИТЕСЬ, ЧТО ЭТО int (узнать через @userinfobot)
 
 # ====== ЛОГИРОВАНИЕ ======
 logging.basicConfig(level=logging.INFO)
@@ -85,6 +85,7 @@ def record_submission(service, topic, participant, status, send_time, link=""):
 
 # ====== ПАРСИНГ ХЭШТЕГА ======
 def extract_name(text):
+    """Извлекает #Фамилия_Имя и преобразует в Фамилия Имя"""
     match = re.search(r'#([А-Яа-яЁё]+_[А-Яа-яЁё]+)', text)
     if not match:
         logger.debug(f"🔍 Не найден хэштег в сообщении: {text[:50]}...")
@@ -172,11 +173,12 @@ async def check_specific_topic(client, service, settings, participants, topic_na
     except Exception as e:
         logger.error(f"❌ Не удалось отправить отчёт: {e}")
 
-# ====== ОБРАБОТЧИК СООБЩЕНИЙ ======
+# ====== ОБРАБОТЧИК СООБЩЕНИЙ В ТЕМАХ ======
 async def handle_message(event, client, service, settings_map):
     message = event.message
     logger.info(f"📩 ПОЛУЧЕНО СООБЩЕНИЕ: {message.text[:100]}...")
 
+    # Проверяем, что это сообщение из группы/канала (не личный чат)
     if not hasattr(message.peer_id, 'channel_id'):
         logger.debug("   ❌ Это не сообщение из группы — пропускаем")
         return
@@ -188,6 +190,7 @@ async def handle_message(event, client, service, settings_map):
 
     logger.info(f"   📌 Тема: {topic_name}")
 
+    # Проверяем, есть ли настройки для этой темы
     setting = settings_map.get(topic_name)
     if not setting:
         logger.error(f"❌ НЕ НАЙДЕНА настройка для темы: '{topic_name}'")
@@ -197,11 +200,13 @@ async def handle_message(event, client, service, settings_map):
     text = message.text or ""
     chat_id = str(message.peer_id.channel_id)
 
+    # Извлекаем имя из хэштега
     name = extract_name(text)
     if not name:
         logger.warning(f"   ❌ Нет корректного хэштега в сообщении: {text}")
         return
 
+    # Проверяем, не было ли уже такого же имени сегодня
     today = datetime.now().strftime("%Y-%m-%d")
     result = service.values().get(spreadsheetId=SHEET_ID, range=f"{REPORTS_SHEET}!A:C").execute()
     rows = result.get('values', [])
@@ -210,6 +215,7 @@ async def handle_message(event, client, service, settings_map):
             logger.info(f"   ✅ Уже записано: {name} в {topic_name}")
             return
 
+    # Проверяем дедлайн
     deadline_str = setting['deadline']
     try:
         deadline_hour, deadline_min = map(int, deadline_str.split(':'))
@@ -221,9 +227,13 @@ async def handle_message(event, client, service, settings_map):
     deadline = now.replace(hour=deadline_hour, minute=deadline_min, second=0, microsecond=0)
     status = "Сдал" if now <= deadline else "Опоздал"
 
+    # Формируем ссылку на сообщение
     link = f"https://t.me/c/{chat_id[4:]}/{message.id}" if chat_id.startswith('-100') else ""
 
+    # Записываем в таблицу
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
+
+    # Логируем успех
     logger.info(f"✅ УСПЕШНО: {name} ({status}) в {topic_name} — время: {now.strftime('%H:%M')}")
 
 # ====== HTTP-СЕРВЕР НА AIOHTTP ======
@@ -251,7 +261,7 @@ app.router.add_get('/', health_check)
 app.router.add_get('/check_all', check_all)
 app.router.add_get('/check_{topic}', check_topic)
 
-# ====== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (для доступа в обработчиках) ======
+# ====== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======
 client = None
 service = None
 settings = None
@@ -274,4 +284,68 @@ async def main():
 
         # Устанавливаем кнопку
         button = KeyboardButton(text="🔍 Проверить всё")
-        markup = ReplyKeyboardMarkup
+        markup = ReplyKeyboardMarkup([[button]])
+
+        try:
+            await client.send_message(
+                ADMIN_CHAT_ID,
+                "✅ Бот готов к работе.\n\n🔘 Нажмите кнопку ниже.\n\n💡 Также можно использовать команды:\n`/check_all`\n`/check_Тема`",
+                buttons=markup
+            )
+            logger.info("✅ Кнопка и инструкция отправлены админу")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось отправить кнопку: {e}")
+
+        # Команды
+        @client.on(events.NewMessage(incoming=True, pattern=r'^/check_all$'))
+        async def on_check_all(event):
+            logger.info("👤 Пользователь использовал команду /check_all")
+            await event.reply("🔄 Запускаю проверку всех тем...")
+            await check_all_topics(client, service, settings, participants)
+
+        @client.on(events.NewMessage(incoming=True, pattern=r'^/check_(.+)$'))
+        async def on_check_topic(event):
+            topic_name = event.pattern_match.group(1).strip()
+            logger.info(f"👤 Пользователь использовал команду /check_{topic_name}")
+            await event.reply(f"🔄 Запускаю проверку темы: {topic_name}...")
+            await check_specific_topic(client, service, settings, participants, topic_name)
+
+        @client.on(events.NewMessage(incoming=True, pattern=r'^🔍\s*Проверить всё$'))
+        async def on_button_press(event):
+            logger.info("🖱️ Пользователь нажал кнопку 'Проверить всё'")
+            await event.reply("🔄 Запускаю проверку всех тем...")
+            await check_all_topics(client, service, settings, participants)
+
+        @client.on(events.NewMessage(incoming=True))
+        async def handler(event):
+            await handle_message(event, client, service, settings)
+
+        # Запускаем HTTP-сервер
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.environ.get("PORT", 10000))
+        site = web.TCPSite(runner, host='0.0.0.0', port=port)
+        await site.start()
+        logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
+
+        # Ждём событий Telegram
+        logger.info("📡 Бот ожидает сообщений...")
+        await client.run_until_disconnected()
+
+    except Exception as e:
+        logger.critical(f"❌ Критическая ошибка в main(): {e}")
+        raise
+
+# ====== ОСНОВНОЙ ЦИКЛ С ПЕРЕЗАПУСКОМ ======
+if __name__ == '__main__':
+    logger.info("🏁 Запуск скрипта shbm_auto_checker.py...")
+    while True:
+        try:
+            logger.info("🔁 Перезапуск бота...")
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("🛑 Бот остановлен пользователем.")
+            break
+        except Exception as e:
+            logger.critical(f"❌ Критическая ошибка: {e}. Перезапуск через 10 сек...")
+            time.sleep(10)
