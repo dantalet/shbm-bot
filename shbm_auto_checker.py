@@ -201,7 +201,7 @@ async def main():
 
     # Устанавливаем кнопку в меню бота
     button = KeyboardButton(text="🔍 Проверить сейчас")
-    markup = ReplyKeyboardMarkup([[button]], resize_keyboard=True, one_time_keyboard=False)
+    markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=False)  # ← ИСПРАВЛЕНО!
     await client.send_message(ADMIN_CHAT_ID, "✅ Бот готов к работе. Нажмите 'Проверить сейчас' для ручной проверки.", buttons=markup)
 
     # Обработчик нажатия кнопки
@@ -224,3 +224,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
