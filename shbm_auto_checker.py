@@ -16,14 +16,14 @@ API_ID = os.getenv('TELEGRAM_API_ID')
 API_HASH = os.getenv('TELEGRAM_API_HASH')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'
+SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← ВАШ ID ТАБЛИЦЫ!
 SETTINGS_SHEET = 'SETTINGS'
 REPORTS_SHEET = 'REPORTS'
 PARTICIPANTS_SHEET = 'PARTICIPANTS'
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-ADMIN_CHAT_ID = 741688548  # ← Ваш ID
+ADMIN_CHAT_ID = 741688548  # ← ВАШ TELEGRAM ID (узнать через @userinfobot)
 
 # ====== ЛОГИРОВАНИЕ ======
 logging.basicConfig(level=logging.INFO)
@@ -36,11 +36,18 @@ def get_sheet_service():
         logger.critical("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON не установлен!")
         raise Exception("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON is not set!")
 
-    creds_dict = json.loads(credentials_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    service = build('sheets', 'v4', credentials=creds)
-    logger.info("✅ Google Sheets API успешно инициализирован")
-    return service.spreadsheets()
+    try:
+        creds_dict = json.loads(credentials_json)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        service = build('sheets', 'v4', credentials=creds)
+        logger.info("✅ Google Sheets API успешно инициализирован")
+        return service.spreadsheets()
+    except json.JSONDecodeError:
+        logger.critical("❌ Неверный формат GOOGLE_APPLICATION_CREDENTIALS_JSON — это не JSON!")
+        raise
+    except Exception as e:
+        logger.critical(f"❌ Ошибка авторизации Google: {e}")
+        raise
 
 def load_settings(service):
     logger.info("🔄 Загрузка настроек из листа SETTINGS...")
@@ -182,6 +189,7 @@ async def handle_message(event, client, service, settings_map):
     message = event.message
     logger.info(f"📩 ПОЛУЧЕНО СООБЩЕНИЕ: {message.text[:100]}...")
 
+    # Проверяем, что это сообщение из группы/канала (не личный чат)
     if not hasattr(message.peer_id, 'channel_id'):
         logger.debug("   ❌ Это не сообщение из группы — пропускаем")
         return
@@ -193,6 +201,7 @@ async def handle_message(event, client, service, settings_map):
 
     logger.info(f"   📌 Тема: {topic_name}")
 
+    # Проверяем, есть ли настройки для этой темы
     setting = settings_map.get(topic_name)
     if not setting:
         logger.error(f"❌ НЕ НАЙДЕНА настройка для темы: '{topic_name}'")
@@ -202,11 +211,13 @@ async def handle_message(event, client, service, settings_map):
     text = message.text or ""
     chat_id = str(message.peer_id.channel_id)
 
+    # Извлекаем имя из хэштега
     name = extract_name(text)
     if not name:
         logger.warning(f"   ❌ Нет корректного хэштега в сообщении: {text}")
         return
 
+    # Проверяем, не было ли уже такого же имени сегодня
     today = datetime.now().strftime("%Y-%m-%d")
     result = service.values().get(spreadsheetId=SHEET_ID, range=f"{REPORTS_SHEET}!A:C").execute()
     rows = result.get('values', [])
@@ -215,6 +226,7 @@ async def handle_message(event, client, service, settings_map):
             logger.info(f"   ✅ Уже записано: {name} в {topic_name}")
             return
 
+    # Проверяем дедлайн
     deadline_str = setting['deadline']
     try:
         deadline_hour, deadline_min = map(int, deadline_str.split(':'))
@@ -226,9 +238,13 @@ async def handle_message(event, client, service, settings_map):
     deadline = now.replace(hour=deadline_hour, minute=deadline_min, second=0, microsecond=0)
     status = "Сдал" if now <= deadline else "Опоздал"
 
+    # Формируем ссылку на сообщение
     link = f"https://t.me/c/{chat_id[4:]}/{message.id}" if chat_id.startswith('-100') else ""
 
+    # ЗАПИСЬ В GOOGLE SHEETS — ТУТ ВСЁ ПРОИСХОДИТ!
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
+
+    # Логируем успех
     logger.info(f"✅ УСПЕШНО: {name} ({status}) в {topic_name} — время: {now.strftime('%H:%M')}")
 
 # ====== HTTP-СЕРВЕР НА AIOHTTP — ВАЖНО: app создается ВНУТРИ ФУНКЦИИ ======
@@ -293,6 +309,14 @@ async def main():
 
     done, pending = await asyncio.wait([http_task, bot_task], return_when=asyncio.FIRST_COMPLETED)
 
+    # 👇 ИЗВЛЕКАЕМ ИСКЛЮЧЕНИЯ ИЗ УПАВШИХ ТАСКОВ — ЭТО ИСПРАВЛЯЕТ "Task exception was never retrieved"
+    for task in done:
+        try:
+            task.result()  # Извлекаем исключение, если оно было
+        except Exception as e:
+            logger.error(f"❌ Один из тасков упал с исключением: {e}")
+
+    # Отменяем все ожидающие таски
     for task in pending:
         task.cancel()
 
