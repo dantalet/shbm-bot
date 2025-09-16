@@ -8,6 +8,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
 from telethon import TelegramClient, events
+from telethon.sessions import MemorySession  # ← НОВЫЙ ЭЛЕМЕНТ!
 from aiohttp import web
 
 # ====== КОНФИГУРАЦИЯ ======
@@ -237,16 +238,7 @@ async def health_check(request):
 app = web.Application()
 app.router.add_get('/', health_check)
 
-# Функция для запуска HTTP-сервера
-async def start_http_server():
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, host='0.0.0.0', port=port)
-    await site.start()
-    logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
-
-# Функция для запуска Telegram-бота
+# ====== ЗАПУСК TELEGRAM-БОТА (БЕЗ ФАЙЛОВЫХ СЕССИЙ!) ======
 async def start_telegram_bot():
     global client, service, settings, participants
 
@@ -254,8 +246,12 @@ async def start_telegram_bot():
     settings = load_settings(service)
     participants = load_participants(service)
 
-    session_path = "/opt/render/project/src/shbm_session"
-    client = TelegramClient(session_path, API_ID, API_HASH)
+    # 🚀 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Используем MemorySession — НЕТ .session файла!
+    client = TelegramClient(
+        MemorySession(),  # ← ВСЁ В ПАМЯТИ — НЕТ БЛОКИРОВКИ!
+        API_ID,
+        API_HASH
+    )
 
     await client.start(bot_token=BOT_TOKEN)
     logger.info("🤖 Бот успешно авторизован в Telegram")
@@ -280,16 +276,22 @@ async def start_telegram_bot():
     logger.info("📡 Бот ожидает сообщений...")
     await client.run_until_disconnected()
 
+# ====== ЗАПУСК HTTP-СЕРВЕРА ======
+async def start_http_server():
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, host='0.0.0.0', port=port)
+    await site.start()
+    logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
+
 # ====== ОСНОВНОЙ ЦИКЛ ======
 async def main():
-    # Запускаем HTTP-сервер и Telegram-бота параллельно
     http_task = asyncio.create_task(start_http_server())
     bot_task = asyncio.create_task(start_telegram_bot())
 
-    # Ждём, пока один из них завершится (бог знает почему — но бот не должен падать)
     done, pending = await asyncio.wait([http_task, bot_task], return_when=asyncio.FIRST_COMPLETED)
 
-    # Если бот упал — перезапускаем всё
     for task in pending:
         task.cancel()
 
