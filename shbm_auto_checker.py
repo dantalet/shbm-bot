@@ -15,14 +15,14 @@ API_ID = os.getenv('TELEGRAM_API_ID')
 API_HASH = os.getenv('TELEGRAM_API_HASH')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← Твой ID — ПРОВЕРЬ, ЧТО ОН ТОЧНО СОВПАДАЕТ!
+SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'
 SETTINGS_SHEET = 'SETTINGS'
 REPORTS_SHEET = 'REPORTS'
 PARTICIPANTS_SHEET = 'PARTICIPANTS'
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-ADMIN_CHAT_ID = 741688548  # ← Твой Telegram ID (узнай через @userinfobot)
+ADMIN_CHAT_ID = 741688548  # ← Ваш ID
 
 # ====== ЛОГИРОВАНИЕ ======
 logging.basicConfig(level=logging.INFO)
@@ -35,18 +35,11 @@ def get_sheet_service():
         logger.critical("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON не установлен!")
         raise Exception("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON is not set!")
 
-    try:
-        creds_dict = json.loads(credentials_json)
-        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        service = build('sheets', 'v4', credentials=creds)
-        logger.info("✅ Google Sheets API успешно инициализирован")
-        return service.spreadsheets()
-    except json.JSONDecodeError:
-        logger.critical("❌ Неверный формат GOOGLE_APPLICATION_CREDENTIALS_JSON — это не JSON!")
-        raise
-    except Exception as e:
-        logger.critical(f"❌ Ошибка авторизации Google: {e}")
-        raise
+    creds_dict = json.loads(credentials_json)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    service = build('sheets', 'v4', credentials=creds)
+    logger.info("✅ Google Sheets API успешно инициализирован")
+    return service.spreadsheets()
 
 def load_settings(service):
     logger.info("🔄 Загрузка настроек из листа SETTINGS...")
@@ -188,7 +181,6 @@ async def handle_message(event, client, service, settings_map):
     message = event.message
     logger.info(f"📩 ПОЛУЧЕНО СООБЩЕНИЕ: {message.text[:100]}...")
 
-    # Проверяем, что это сообщение из группы/канала (не личный чат)
     if not hasattr(message.peer_id, 'channel_id'):
         logger.debug("   ❌ Это не сообщение из группы — пропускаем")
         return
@@ -200,7 +192,6 @@ async def handle_message(event, client, service, settings_map):
 
     logger.info(f"   📌 Тема: {topic_name}")
 
-    # Проверяем, есть ли настройки для этой темы
     setting = settings_map.get(topic_name)
     if not setting:
         logger.error(f"❌ НЕ НАЙДЕНА настройка для темы: '{topic_name}'")
@@ -210,13 +201,11 @@ async def handle_message(event, client, service, settings_map):
     text = message.text or ""
     chat_id = str(message.peer_id.channel_id)
 
-    # Извлекаем имя из хэштега
     name = extract_name(text)
     if not name:
         logger.warning(f"   ❌ Нет корректного хэштега в сообщении: {text}")
         return
 
-    # Проверяем, не было ли уже такого же имени сегодня
     today = datetime.now().strftime("%Y-%m-%d")
     result = service.values().get(spreadsheetId=SHEET_ID, range=f"{REPORTS_SHEET}!A:C").execute()
     rows = result.get('values', [])
@@ -225,7 +214,6 @@ async def handle_message(event, client, service, settings_map):
             logger.info(f"   ✅ Уже записано: {name} в {topic_name}")
             return
 
-    # Проверяем дедлайн
     deadline_str = setting['deadline']
     try:
         deadline_hour, deadline_min = map(int, deadline_str.split(':'))
@@ -237,84 +225,81 @@ async def handle_message(event, client, service, settings_map):
     deadline = now.replace(hour=deadline_hour, minute=deadline_min, second=0, microsecond=0)
     status = "Сдал" if now <= deadline else "Опоздал"
 
-    # Формируем ссылку на сообщение
     link = f"https://t.me/c/{chat_id[4:]}/{message.id}" if chat_id.startswith('-100') else ""
 
-    # ЗАПИСЬ В GOOGLE SHEETS — ТУТ ВСЁ ПРОИСХОДИТ!
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
-
-    # Логируем успех
     logger.info(f"✅ УСПЕШНО: {name} ({status}) в {topic_name} — время: {now.strftime('%H:%M')}")
 
 # ====== HTTP-СЕРВЕР НА AIOHTTP ======
 async def health_check(request):
-    """Отвечает на / — Render проверяет жив ли сервис"""
     return web.Response(text="✅ Telegram bot is running!", content_type="text/plain")
 
 app = web.Application()
 app.router.add_get('/', health_check)
 
-# ====== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======
-client = None
-service = None
-settings = None
-participants = None
+# Функция для запуска HTTP-сервера
+async def start_http_server():
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, host='0.0.0.0', port=port)
+    await site.start()
+    logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
 
-# ====== ОСНОВНОЙ ЦИКЛ БОТА ======
-async def main():
+# Функция для запуска Telegram-бота
+async def start_telegram_bot():
     global client, service, settings, participants
 
-    try:
-        service = get_sheet_service()
-        settings = load_settings(service)
-        participants = load_participants(service)
+    service = get_sheet_service()
+    settings = load_settings(service)
+    participants = load_participants(service)
 
-        session_path = "/opt/render/project/src/shbm_session"
-        client = TelegramClient(session_path, API_ID, API_HASH)
+    session_path = "/opt/render/project/src/shbm_session"
+    client = TelegramClient(session_path, API_ID, API_HASH)
 
-        await client.start(bot_token=BOT_TOKEN)
-        logger.info("🤖 Бот успешно авторизован в Telegram")
+    await client.start(bot_token=BOT_TOKEN)
+    logger.info("🤖 Бот успешно авторизован в Telegram")
 
-        # Команды
-        @client.on(events.NewMessage(incoming=True, pattern=r'^/check_all$'))
-        async def on_check_all(event):
-            logger.info("👤 Пользователь использовал команду /check_all")
-            await event.reply("🔄 Запускаю проверку всех тем...")
-            await check_all_topics(client, service, settings, participants)
+    @client.on(events.NewMessage(incoming=True, pattern=r'^/check_all$'))
+    async def on_check_all(event):
+        logger.info("👤 Пользователь использовал команду /check_all")
+        await event.reply("🔄 Запускаю проверку всех тем...")
+        await check_all_topics(client, service, settings, participants)
 
-        @client.on(events.NewMessage(incoming=True, pattern=r'^/check_(.+)$'))
-        async def on_check_topic(event):
-            topic_name = event.pattern_match.group(1).strip()
-            logger.info(f"👤 Пользователь использовал команду /check_{topic_name}")
-            await event.reply(f"🔄 Запускаю проверку темы: {topic_name}...")
-            await check_specific_topic(client, service, settings, participants, topic_name)
+    @client.on(events.NewMessage(incoming=True, pattern=r'^/check_(.+)$'))
+    async def on_check_topic(event):
+        topic_name = event.pattern_match.group(1).strip()
+        logger.info(f"👤 Пользователь использовал команду /check_{topic_name}")
+        await event.reply(f"🔄 Запускаю проверку темы: {topic_name}...")
+        await check_specific_topic(client, service, settings, participants, topic_name)
 
-        @client.on(events.NewMessage(incoming=True))
-        async def handler(event):
-            await handle_message(event, client, service, settings)
+    @client.on(events.NewMessage(incoming=True))
+    async def handler(event):
+        await handle_message(event, client, service, settings)
 
-        # Запускаем HTTP-сервер
-        runner = web.AppRunner(app)
-        await runner.setup()
-        port = int(os.environ.get("PORT", 10000))
-        site = web.TCPSite(runner, host='0.0.0.0', port=port)
-        await site.start()
-        logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
+    logger.info("📡 Бот ожидает сообщений...")
+    await client.run_until_disconnected()
 
-        # Ждём событий Telegram
-        logger.info("📡 Бот ожидает сообщений...")
-        await client.run_until_disconnected()
+# ====== ОСНОВНОЙ ЦИКЛ ======
+async def main():
+    # Запускаем HTTP-сервер и Telegram-бота параллельно
+    http_task = asyncio.create_task(start_http_server())
+    bot_task = asyncio.create_task(start_telegram_bot())
 
-    except Exception as e:
-        logger.critical(f"❌ Критическая ошибка в main(): {e}")
-        raise
+    # Ждём, пока один из них завершится (бог знает почему — но бот не должен падать)
+    done, pending = await asyncio.wait([http_task, bot_task], return_when=asyncio.FIRST_COMPLETED)
 
-# ====== ОСНОВНОЙ ЦИКЛ С ПЕРЕЗАПУСКОМ ======
+    # Если бот упал — перезапускаем всё
+    for task in pending:
+        task.cancel()
+
+    logger.critical("⚠️ Telegram бот упал — перезапуск через 10 сек...")
+    await asyncio.sleep(10)
+
 if __name__ == '__main__':
     logger.info("🏁 Запуск скрипта shbm_auto_checker.py...")
     while True:
         try:
-            logger.info("🔁 Перезапуск бота...")
             asyncio.run(main())
         except KeyboardInterrupt:
             logger.info("🛑 Бот остановлен пользователем.")
