@@ -15,14 +15,14 @@ API_ID = os.getenv('TELEGRAM_API_ID')
 API_HASH = os.getenv('TELEGRAM_API_HASH')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← ЗАМЕНИТЕ НА СВОЙ!
+SHEET_ID = '1QG1MWTZveCVUf8tBUUgRqZEA83qW_gZZSgV4sZiAuhM'  # ← Твой ID — ПРОВЕРЬ, ЧТО ОН ТОЧНО СОВПАДАЕТ!
 SETTINGS_SHEET = 'SETTINGS'
 REPORTS_SHEET = 'REPORTS'
 PARTICIPANTS_SHEET = 'PARTICIPANTS'
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-ADMIN_CHAT_ID = 741688548  # ← УБЕДИТЕСЬ, ЧТО ЭТО int (узнать через @userinfobot)
+ADMIN_CHAT_ID = 741688548  # ← Твой Telegram ID (узнай через @userinfobot)
 
 # ====== ЛОГИРОВАНИЕ ======
 logging.basicConfig(level=logging.INFO)
@@ -35,11 +35,18 @@ def get_sheet_service():
         logger.critical("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON не установлен!")
         raise Exception("❌ GOOGLE_APPLICATION_CREDENTIALS_JSON is not set!")
 
-    creds_dict = json.loads(credentials_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    service = build('sheets', 'v4', credentials=creds)
-    logger.info("✅ Google Sheets API успешно инициализирован")
-    return service.spreadsheets()
+    try:
+        creds_dict = json.loads(credentials_json)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        service = build('sheets', 'v4', credentials=creds)
+        logger.info("✅ Google Sheets API успешно инициализирован")
+        return service.spreadsheets()
+    except json.JSONDecodeError:
+        logger.critical("❌ Неверный формат GOOGLE_APPLICATION_CREDENTIALS_JSON — это не JSON!")
+        raise
+    except Exception as e:
+        logger.critical(f"❌ Ошибка авторизации Google: {e}")
+        raise
 
 def load_settings(service):
     logger.info("🔄 Загрузка настроек из листа SETTINGS...")
@@ -71,6 +78,7 @@ def record_submission(service, topic, participant, status, send_time, link=""):
     now = datetime.now().strftime("%Y-%m-%d")
     row = [now, topic, participant, status, send_time, link]
     logger.info(f"📝 Запись в таблицу REPORTS: {row}")
+
     try:
         service.values().append(
             spreadsheetId=SHEET_ID,
@@ -80,11 +88,14 @@ def record_submission(service, topic, participant, status, send_time, link=""):
         ).execute()
         logger.info(f"✅ Запись сохранена: {participant} в {topic}")
     except Exception as e:
-        logger.error(f"❌ Ошибка записи в Google Sheets: {e}")
+        logger.error(f"❌ ОШИБКА записи в Google Sheets: {str(e)}")
+        logger.error(f"   - Таблица ID: {SHEET_ID}")
+        logger.error(f"   - Лист: {REPORTS_SHEET}")
+        logger.error(f"   - Данные: {row}")
+        logger.error(f"   - Ошибка типа: {type(e).__name__}")
 
 # ====== ПАРСИНГ ХЭШТЕГА ======
 def extract_name(text):
-    """Извлекает #Фамилия_Имя и преобразует в Фамилия Имя"""
     match = re.search(r'#([А-Яа-яЁё]+_[А-Яа-яЁё]+)', text)
     if not match:
         logger.debug(f"🔍 Не найден хэштег в сообщении: {text[:50]}...")
@@ -229,7 +240,7 @@ async def handle_message(event, client, service, settings_map):
     # Формируем ссылку на сообщение
     link = f"https://t.me/c/{chat_id[4:]}/{message.id}" if chat_id.startswith('-100') else ""
 
-    # Записываем в таблицу
+    # ЗАПИСЬ В GOOGLE SHEETS — ТУТ ВСЁ ПРОИСХОДИТ!
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
 
     # Логируем успех
