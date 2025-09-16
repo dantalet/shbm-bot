@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
 from telethon import TelegramClient, events
-from telethon.sessions import MemorySession  # ← НОВЫЙ ЭЛЕМЕНТ!
+from telethon.sessions import MemorySession
 from aiohttp import web
 
 # ====== КОНФИГУРАЦИЯ ======
@@ -231,14 +231,23 @@ async def handle_message(event, client, service, settings_map):
     record_submission(service, topic_name, name, status, now.strftime("%H:%M"), link)
     logger.info(f"✅ УСПЕШНО: {name} ({status}) в {topic_name} — время: {now.strftime('%H:%M')}")
 
-# ====== HTTP-СЕРВЕР НА AIOHTTP ======
+# ====== HTTP-СЕРВЕР НА AIOHTTP — ВАЖНО: app создается ВНУТРИ ФУНКЦИИ ======
+async def start_http_server():
+    # 👇 Создаем app здесь — КАЖДЫЙ РАЗ НОВЫЙ, в текущем цикле
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, host='0.0.0.0', port=port)
+    await site.start()
+    logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
+
 async def health_check(request):
     return web.Response(text="✅ Telegram bot is running!", content_type="text/plain")
 
-app = web.Application()
-app.router.add_get('/', health_check)
-
-# ====== ЗАПУСК TELEGRAM-БОТА (БЕЗ ФАЙЛОВЫХ СЕССИЙ!) ======
+# ====== ЗАПУСК TELEGRAM-БОТА ======
 async def start_telegram_bot():
     global client, service, settings, participants
 
@@ -246,9 +255,9 @@ async def start_telegram_bot():
     settings = load_settings(service)
     participants = load_participants(service)
 
-    # 🚀 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Используем MemorySession — НЕТ .session файла!
+    # Используем MemorySession — без файлов
     client = TelegramClient(
-        MemorySession(),  # ← ВСЁ В ПАМЯТИ — НЕТ БЛОКИРОВКИ!
+        MemorySession(),
         API_ID,
         API_HASH
     )
@@ -276,17 +285,9 @@ async def start_telegram_bot():
     logger.info("📡 Бот ожидает сообщений...")
     await client.run_until_disconnected()
 
-# ====== ЗАПУСК HTTP-СЕРВЕРА ======
-async def start_http_server():
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, host='0.0.0.0', port=port)
-    await site.start()
-    logger.info(f"🌐 HTTP-сервер запущен на порту {port}")
-
 # ====== ОСНОВНОЙ ЦИКЛ ======
 async def main():
+    # Запускаем HTTP-сервер и Telegram-бота параллельно
     http_task = asyncio.create_task(start_http_server())
     bot_task = asyncio.create_task(start_telegram_bot())
 
